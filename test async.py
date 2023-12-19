@@ -7,13 +7,16 @@ async def explore_nodes(node, indent=""):
         children = await node.get_children()
         
         if children == []:
-            print(f"{indent}Children ID: {node.nodeid}, Children Browse Name: {browse_name.Name}")
+            # print(f"{indent}Children ID: {node.nodeid}, Children Browse Name: {browse_name.Name}")
+            print(f"{indent}{browse_name.Name}")
             return
 
-        print(f"{indent}Node ID: {node.nodeid}, Node Browse Name: {browse_name.Name}")
-        
+        # print(f"{indent}Node ID: {node.nodeid}, Node Browse Name: {browse_name.Name}")
+        print(f"{indent}{browse_name.Name}:")
+
         for child in children:
-            await explore_nodes(child, indent + "  ")
+            # await explore_nodes(child, indent + "  ")
+            await explore_nodes(child, indent + "---")
 
     except Exception as e:
         print(f"{indent}Error exploring node: {e}")
