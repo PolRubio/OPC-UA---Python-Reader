@@ -96,17 +96,24 @@ def main(args):
         try:
             signal.signal(signal.SIGINT, on_sigint)
 
-            with alive_bar(reads_remaining, bar='classic', title='Reading Nodes', calibrate=3) as bar:
+            with alive_bar(reads_remaining, title='Diferent Nodes', calibrate=1000) as bar:
                 with open(filename, 'w', newline='') as csvfile:
                     writer = csv.writer(csvfile)
                     writer.writerow(["Timestamp"] + leaf_node_names)
+                    last_nodes = {node: None for node in leaf_nodes}
 
                     while reads_remaining != 0:
+                        diferent_node = False
                         row = [time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())]
+
                         for node in leaf_nodes:
                             try:
                                 value = await node.read_value()
-                                if args.verbose: print(f"{node} = {value}")
+                                if last_nodes[node] != value:
+                                    last_nodes[node] = value
+                                    diferent_node = True
+                                    if args.verbose: print(f"{node} = {value}")
+                                
                                 row.append(value)
                             except Exception as e:
                                 row.append("Error")
@@ -114,12 +121,14 @@ def main(args):
                                     print(f"Error reading node ({node}): {e}")
                                     print(traceback.format_exc())
 
-                        writer.writerow(row)
-                        csvfile.flush()
-
                         if reads_remaining > 0:
                             reads_remaining -= 1
-                        bar()
+
+                        if diferent_node:
+                            writer.writerow(row)
+                            csvfile.flush()
+                            bar()
+                            if args.verbose: print()
 
                         await asyncio.sleep(float(args.time))
 
