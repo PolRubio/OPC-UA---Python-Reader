@@ -1,5 +1,11 @@
-import asyncio, argparse, traceback, signal, time
+import asyncio
+import argparse
+import traceback
+import signal
+import time
+import csv
 from asyncua import Client
+from alive_progress import alive_bar
 
 class NodeExplorer:
     def __init__(self, client):
@@ -27,6 +33,13 @@ class NodeExplorer:
 
     def get_leaf_nodes(self):
         return self.leaf_nodes
+
+    async def get_leaf_node_names(self):
+        leaf_nodes_names = []
+        for node in self.leaf_nodes:
+            browse_name = await node.read_browse_name()
+            leaf_nodes_names.append(browse_name.Name)
+        return leaf_nodes_names
 
 class OPCUAClient:
     def __init__(self, server_ip, server_port, username=None, password=None):
@@ -68,33 +81,47 @@ def main(args):
                 explorer.print_summary()
 
             leaf_nodes = explorer.get_leaf_nodes()
+            leaf_node_names = await explorer.get_leaf_node_names()
         except Exception as e:
             print(f"Error exploring nodes: {e}")
             if args.verbose: print(traceback.format_exc())
             return
 
         reads_remaining = int(args.read)
+        if args.file is None:
+            filename = f"opcua_{args.server}_{args.port}_{time.strftime('%Y%m%d', time.localtime())}.csv"
+        else:
+            filename = args.file
+
         try:
             signal.signal(signal.SIGINT, on_sigint)
-            
-            while reads_remaining != 0:
-                print(f"------- {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())} -------")
-                print(f"Reads remaining: {reads_remaining}" if reads_remaining > 0 else "Reads remaining: infinite")
-                for node in leaf_nodes:
-                    try:
-                        value = await node.read_value()
-                        print(f"{node} = {value}")
-                    except Exception as e:
-                        if args.verbose:
-                            print(f"Error reading node ({node}): {e}")
-                            print(traceback.format_exc())
 
-                print()
-                if reads_remaining > 0:
-                    reads_remaining -= 1
+            with alive_bar(reads_remaining, bar='classic', title='Reading Nodes', calibrate=3) as bar:
+                with open(filename, 'w', newline='') as csvfile:
+                    writer = csv.writer(csvfile)
+                    writer.writerow(["Timestamp"] + leaf_node_names)
 
-                await asyncio.sleep(float(args.time))
+                    while reads_remaining != 0:
+                        row = [time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())]
+                        for node in leaf_nodes:
+                            try:
+                                value = await node.read_value()
+                                if args.verbose: print(f"{node} = {value}")
+                                row.append(value)
+                            except Exception as e:
+                                row.append("Error")
+                                if args.verbose:
+                                    print(f"Error reading node ({node}): {e}")
+                                    print(traceback.format_exc())
 
+                        writer.writerow(row)
+                        csvfile.flush()
+
+                        if reads_remaining > 0:
+                            reads_remaining -= 1
+                        bar()
+
+                        await asyncio.sleep(float(args.time))
 
         except KeyboardInterrupt:
             pass
@@ -124,6 +151,7 @@ if __name__ == "__main__":
     parser.add_argument('-w', '--password', dest='password', help='OPC UA server password')
     parser.add_argument('-t', '--time', dest='time', default=1, help='Time between reads in seconds')
     parser.add_argument('-r', '--read', dest='read', default=10, help='Number of reads, -1 for infinite')
+    parser.add_argument('-f', '--file', dest='file', help='Output file name')
     parser.add_argument('-v', '--verbose', dest='verbose', action='store_true', help='Verbose output')
 
     args = parser.parse_args()
