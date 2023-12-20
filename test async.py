@@ -104,7 +104,14 @@ def main(args):
                 if args.verbose: print(traceback.format_exc())
                 return
 
-    asyncio.run(run())
+    try:
+        asyncio.run(run())
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        print(f"Error running async loop: {e}")
+        if args.verbose: print(traceback.format_exc())
+        return
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Explore OPC UA server nodes.')
