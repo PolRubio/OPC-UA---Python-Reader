@@ -1,4 +1,4 @@
-import asyncio, argparse, traceback, signal
+import asyncio, argparse, traceback, signal, time
 from asyncua import Client
 
 class NodeExplorer:
@@ -78,6 +78,8 @@ def main(args):
             signal.signal(signal.SIGINT, on_sigint)
             
             while reads_remaining != 0:
+                print(f"------- {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())} -------")
+                print(f"Reads remaining: {reads_remaining}" if reads_remaining > 0 else "Reads remaining: infinite")
                 for node in leaf_nodes:
                     try:
                         value = await node.read_value()
@@ -87,6 +89,7 @@ def main(args):
                             print(f"Error reading node ({node}): {e}")
                             print(traceback.format_exc())
 
+                print()
                 if reads_remaining > 0:
                     reads_remaining -= 1
 
