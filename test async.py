@@ -1,4 +1,4 @@
-import asyncio, argparse, traceback
+import asyncio, argparse, traceback, signal
 from asyncua import Client
 
 class NodeExplorer:
@@ -43,12 +43,16 @@ class OPCUAClient:
         await self.client.disconnect()
         print("Disconnected from server!\n")
 
+def on_sigint(signum, frame):
+    print("\nReceived SIGINT (CTRL+C). Exiting gracefully.")
+    raise KeyboardInterrupt
+
 def main(args):
     opcua_client = OPCUAClient(args.server, args.port, args.username, args.password)
 
     async def run():
         explorer = NodeExplorer(opcua_client.client)
-        
+
         try:
             await opcua_client.connect()
         except Exception as e:
@@ -59,33 +63,46 @@ def main(args):
         try:
             root_node = opcua_client.client.get_root_node()
             await explorer.explore_nodes(root_node)
-            if args.verbose: 
+            if args.verbose:
                 explorer.print_leaf_nodes()
                 explorer.print_summary()
 
-            leaf_nodes = explorer.get_leaf_nodes()              
+            leaf_nodes = explorer.get_leaf_nodes()
         except Exception as e:
             print(f"Error exploring nodes: {e}")
             if args.verbose: print(traceback.format_exc())
             return
 
-        for node in leaf_nodes:
-            try:
-                value = await node.read_value()
-                print(f"{node} = {value}")
-            except Exception as e:
-                if args.verbose:
-                    print(f"Error reading node ({node}): {e}")
-                    print(traceback.format_exc())
-
-        print()
-
+        reads_remaining = int(args.read)
         try:
-            await opcua_client.disconnect()
-        except Exception as e:
-            print(f"Error disconnecting from server: {e}")
-            if args.verbose: print(traceback.format_exc())
-            return
+            signal.signal(signal.SIGINT, on_sigint)
+            
+            while reads_remaining != 0:
+                for node in leaf_nodes:
+                    try:
+                        value = await node.read_value()
+                        print(f"{node} = {value}")
+                    except Exception as e:
+                        if args.verbose:
+                            print(f"Error reading node ({node}): {e}")
+                            print(traceback.format_exc())
+
+                if reads_remaining > 0:
+                    reads_remaining -= 1
+
+                await asyncio.sleep(float(args.time))
+
+
+        except KeyboardInterrupt:
+            pass
+        finally:
+            print("\nExiting...")
+            try:
+                await opcua_client.disconnect()
+            except Exception as e:
+                print(f"Error disconnecting from server: {e}")
+                if args.verbose: print(traceback.format_exc())
+                return
 
     asyncio.run(run())
 
@@ -96,7 +113,7 @@ if __name__ == "__main__":
     parser.add_argument('-u', '--username', dest='username', help='OPC UA server username')
     parser.add_argument('-w', '--password', dest='password', help='OPC UA server password')
     parser.add_argument('-t', '--time', dest='time', default=1, help='Time between reads in seconds')
-    parser.add_argument('-r', '--read', dest='read', default=10, help='Number of reads, 0 for infinite')
+    parser.add_argument('-r', '--read', dest='read', default=10, help='Number of reads, -1 for infinite')
     parser.add_argument('-v', '--verbose', dest='verbose', action='store_true', help='Verbose output')
 
     args = parser.parse_args()
