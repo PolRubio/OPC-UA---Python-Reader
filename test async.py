@@ -58,10 +58,11 @@ class OPCUAClient:
         print("Disconnected from server!\n")
 
 class DataHandler:
-    def __init__(self, args, leaf_nodes):
+    def __init__(self, args, leaf_nodes, leaf_nodes_names):
         self.args = args
         self.leaf_nodes = leaf_nodes
         self.last_nodes = {node: None for node in leaf_nodes}
+        self.leaf_nodes_names = leaf_nodes_names
 
         if self.args.save_to_csv and self.args.file_name is None:
             self.file_name = f"{time.strftime('%Y-%m-%d_%H-%M-%S', time.localtime())}.csv"
@@ -72,16 +73,26 @@ class DataHandler:
             connection_string = f"DRIVER={self.args.sql_driver};SERVER={self.args.db_ip};DATABASE={self.args.db_name};UID={self.args.db_username};PWD={self.args.db_password}"
             self.connection = pyodbc.connect(connection_string)
             self.cursor = self.connection.cursor()
-            self.create_table()
 
-    def create_table(self):
-        if self.args.sql_driver.lower() == 'sql server':
-            self.cursor.execute(f"CREATE TABLE IF NOT EXISTS {self.args.table_name} (Timestamp DATETIME, "
-                                + ', '.join([f"{node} FLOAT" for node in self.leaf_nodes]) + ")")
-        else:
-            # Actually not implemented for other drivers 
-            pass
+    def is_table_created(self):
+        self.cursor.execute(f"SELECT name FROM sys.tables WHERE name='{self.args.table_name}'")
+        return self.cursor.fetchone() is not None
 
+    def create_table(self, types):
+        if self.args.verbose: print(f"CREATE TABLE {self.args.table_name} (Timestamp DATETIME, "
+                                + ', '.join([f"{node.replace(r'.', r'_')} {types[node.replace(r'.', r'_')]}" for node in self.leaf_nodes_names]) + ")")
+        self.cursor.execute(f"CREATE TABLE {self.args.table_name} (Timestamp DATETIME, "
+                                + ', '.join([f"{node.replace(r'.', r'_')} {types[node.replace(r'.', r'_')]}" for node in self.leaf_nodes_names]) + ")")
+        self.connection.commit()
+        print(f"Created table {self.args.table_name} in database {self.args.db_name}!\n")
+
+    def write_header(self, header):
+        if self.args.save_to_csv:
+            with open(self.file_name, 'w', newline='') as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerow(header)
+                csvfile.flush()
+    
     def write_row(self, row):
         if self.args.save_to_csv:
             with open(self.file_name, 'a', newline='') as csvfile:
@@ -92,6 +103,9 @@ class DataHandler:
         if self.args.save_to_sql:
             placeholders = ', '.join(['?' for _ in row])
             insert_query = f"INSERT INTO {self.args.table_name} VALUES ({placeholders})"
+            if self.args.verbose: 
+                print(insert_query)
+                print(row)
             self.cursor.execute(insert_query, row)
             self.connection.commit()
 
@@ -130,7 +144,7 @@ class DataExplorer:
         reads_remaining = int(self.args.reads)
 
         try:
-            self.data_handler = DataHandler(self.args, leaf_nodes)
+            self.data_handler = DataHandler(self.args, leaf_nodes, leaf_node_names)
         except Exception as e:
             print(f"Error creating data handler: {e}")
             if self.args.verbose: print(traceback.format_exc())
@@ -140,7 +154,7 @@ class DataExplorer:
             signal.signal(signal.SIGINT, on_sigint)
 
             with alive_bar(reads_remaining, title='Diferent Nodes' if not self.args.all else 'Reading Nodes', calibrate=1000) as bar:
-                self.data_handler.write_row(["Timestamp"] + leaf_node_names)
+                self.data_handler.write_header(["Timestamp"] + leaf_node_names)
                 while reads_remaining != 0:
                     diferent_node = False
                     row = [time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())]
@@ -164,6 +178,24 @@ class DataExplorer:
                         reads_remaining -= 1
 
                     if diferent_node or self.args.all:
+
+                        if self.args.save_to_sql :
+                            if self.args.verbose: print(f"Is table {self.args.table_name} created in database {self.args.db_name}? {self.data_handler.is_table_created()}")
+                            if not self.data_handler.is_table_created():
+                                types = {"TIMESTAMP": "DATETIME"}
+                                tmp_row = row[1:]
+                                for i in range(len(leaf_node_names)):
+                                    try:
+                                        float(tmp_row[i])
+                                        types[leaf_node_names[i].replace(r'.', r'_')] = "FLOAT"
+                                    except:
+                                        types[leaf_node_names[i].replace(r'.', r'_')] = "VARCHAR(255)"
+
+                                if self.args.verbose:
+                                    print(types)
+                                    print()
+                                self.data_handler.create_table(types)
+
                         self.data_handler.write_row(row)
                         bar()
                         if self.args.verbose: print()
@@ -214,7 +246,7 @@ if __name__ == "__main__":
     parser.add_argument('--db-name', dest='db_name', help='Database name')
     parser.add_argument('--db-username', dest='db_username', help='Database username')
     parser.add_argument('--db-password', dest='db_password', help='Database password')
-    parser.add_argument('--sql-driver', dest='sql_driver', default='SQL Server', help='SQL Server driver (default: SQL Server)')
+    parser.add_argument('--sql-driver', dest='sql_driver', help='SQL Server driver')
     parser.add_argument('--table-name', dest='table_name', help='Name of the table to save data')
 
     # CSV options
