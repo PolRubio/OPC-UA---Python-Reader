@@ -232,7 +232,7 @@ if __name__ == "__main__":
 
     # OPC UA server options
     parser.add_argument('-s', '--server', dest='server', required=True, help='OPC UA server IP address')
-    parser.add_argument('-p', '--port', dest='port', default=16664, help='OPC UA server port')
+    parser.add_argument('-p', '--port', dest='port', default=4840, help='OPC UA server port')
     parser.add_argument('-u', '--username', dest='username', help='OPC UA server username')
     parser.add_argument('-w', '--password', dest='password', help='OPC UA server password')
 
