@@ -1,4 +1,4 @@
-# OPC UA Node Explorer
+# OPC UA PYTHON READER
 
 This Python script allows you to explore OPC UA server nodes and read their values. It connects to an OPC UA server, explores the server's nodes, and records the values in a CSV file.
 
