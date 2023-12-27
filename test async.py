@@ -4,6 +4,7 @@ import traceback
 import signal
 import time
 import csv
+import pyodbc
 from asyncua import Client
 from alive_progress import alive_bar
 
@@ -56,19 +57,43 @@ class OPCUAClient:
         await self.client.disconnect()
         print("Disconnected from server!\n")
 
-class CSVHandler:
-    def __init__(self, filename, leaf_nodes):
-        if filename is None:
-            filename = f"opcua_{args.server}_{args.port}_{time.strftime('%Y%m%d', time.localtime())}.csv"
-        self.filename = filename
+class DataHandler:
+    def __init__(self, args, leaf_nodes):
+        self.args = args
         self.leaf_nodes = leaf_nodes
         self.last_nodes = {node: None for node in leaf_nodes}
 
+        if self.args.save_to_csv and self.args.file_name is None:
+            self.file_name = f"{time.strftime('%Y-%m-%d_%H-%M-%S', time.localtime())}.csv"
+        else:
+            self.file_name = self.args.file_name
+
+        if self.args.save_to_sql:
+            connection_string = f"DRIVER={self.args.sql_driver};SERVER={self.args.db_ip};DATABASE={self.args.db_name};UID={self.args.db_username};PWD={self.args.db_password}"
+            self.connection = pyodbc.connect(connection_string)
+            self.cursor = self.connection.cursor()
+            self.create_table()
+
+    def create_table(self):
+        if self.args.sql_driver.lower() == 'sql server':
+            self.cursor.execute(f"CREATE TABLE IF NOT EXISTS {self.args.table_name} (Timestamp DATETIME, "
+                                + ', '.join([f"{node} FLOAT" for node in self.leaf_nodes]) + ")")
+        else:
+            # Actually not implemented for other drivers 
+            pass
+
     def write_row(self, row):
-        with open(self.filename, 'a', newline='') as csvfile:
-            writer = csv.writer(csvfile)
-            writer.writerow(row)
-            csvfile.flush()
+        if self.args.save_to_csv:
+            with open(self.file_name, 'a', newline='') as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerow(row)
+                csvfile.flush()
+
+        if self.args.save_to_sql:
+            placeholders = ', '.join(['?' for _ in row])
+            insert_query = f"INSERT INTO {self.args.table_name} VALUES ({placeholders})"
+            self.cursor.execute(insert_query, row)
+            self.connection.commit()
 
 def on_sigint(signum, frame):
     print("\nReceived SIGINT (CTRL+C). Exiting gracefully.")
@@ -97,7 +122,6 @@ class DataExplorer:
 
             leaf_nodes = self.explorer.get_leaf_nodes()
             leaf_node_names = await self.explorer.get_leaf_node_names()
-            self.csv_handler = CSVHandler(self.args.file, leaf_nodes)
         except Exception as e:
             print(f"Error exploring nodes: {e}")
             if self.args.verbose: print(traceback.format_exc())
@@ -106,10 +130,17 @@ class DataExplorer:
         reads_remaining = int(self.args.reads)
 
         try:
+            self.data_handler = DataHandler(self.args, leaf_nodes)
+        except Exception as e:
+            print(f"Error creating data handler: {e}")
+            if self.args.verbose: print(traceback.format_exc())
+            return
+
+        try:
             signal.signal(signal.SIGINT, on_sigint)
 
             with alive_bar(reads_remaining, title='Diferent Nodes' if not self.args.all else 'Reading Nodes', calibrate=1000) as bar:
-                self.csv_handler.write_row(["Timestamp"] + leaf_node_names)
+                self.data_handler.write_row(["Timestamp"] + leaf_node_names)
                 while reads_remaining != 0:
                     diferent_node = False
                     row = [time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())]
@@ -117,8 +148,8 @@ class DataExplorer:
                     for node in leaf_nodes:
                         try:
                             value = await node.read_value()
-                            if self.csv_handler.last_nodes[node] != value:
-                                self.csv_handler.last_nodes[node] = value
+                            if self.data_handler.last_nodes[node] != value:
+                                self.data_handler.last_nodes[node] = value
                                 diferent_node = True
                                 if self.args.verbose: print(f"{node} = {value}")
                             
@@ -133,11 +164,11 @@ class DataExplorer:
                         reads_remaining -= 1
 
                     if diferent_node or self.args.all:
-                        self.csv_handler.write_row(row)
+                        self.data_handler.write_row(row)
                         bar()
                         if self.args.verbose: print()
 
-                    await asyncio.sleep(float(args.time))
+                    await asyncio.sleep(float(self.args.time))
 
         except KeyboardInterrupt:
             pass
@@ -165,18 +196,44 @@ def main(args):
         return
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Explore OPC UA server nodes.')
+    parser = argparse.ArgumentParser(description='Explore OPC UA server nodes and save data.')
+
+    # OPC UA server options
     parser.add_argument('-s', '--server', dest='server', required=True, help='OPC UA server IP address')
     parser.add_argument('-p', '--port', dest='port', default=16664, help='OPC UA server port')
     parser.add_argument('-u', '--username', dest='username', help='OPC UA server username')
     parser.add_argument('-w', '--password', dest='password', help='OPC UA server password')
+
+    # Time and reads options
     parser.add_argument('-t', '--time', dest='time', default=1, help='Time between reads in seconds')
     parser.add_argument('-r', '--reads', dest='reads', default=10, help='Number of reads, -1 for infinite')
-    parser.add_argument('-f', '--file', dest='file', help='Output file name')
+
+    # SQL Server options
+    parser.add_argument('--save-to-sql', dest='save_to_sql', action='store_true', help='Save data to SQL Server')
+    parser.add_argument('--db-ip', dest='db_ip', help='Database IP address')
+    parser.add_argument('--db-name', dest='db_name', help='Database name')
+    parser.add_argument('--db-username', dest='db_username', help='Database username')
+    parser.add_argument('--db-password', dest='db_password', help='Database password')
+    parser.add_argument('--sql-driver', dest='sql_driver', default='SQL Server', help='SQL Server driver (default: SQL Server)')
+    parser.add_argument('--table-name', dest='table_name', help='Name of the table to save data')
+
+    # CSV options
+    parser.add_argument('--no-save-to-csv', dest='save_to_csv', action='store_false', help='Do not save data to a CSV file')
+    parser.add_argument('-f', '--file-name', dest='file_name', help='Output file name for saving CSV data')
+
+    # Optional flags for debugging
     parser.add_argument('-a', '--all', dest='all', action='store_true', help='Save all nodes, not just when they change')
     parser.add_argument('-v', '--verbose', dest='verbose', action='store_true', help='Verbose output')
 
     args = parser.parse_args()
+
+    if args.save_to_sql and (not args.db_ip or not args.db_name or not args.db_username or not args.db_password or not args.table_name):
+        print("For SQL Server, please provide database IP, name, username, password, and table name.")
+        exit()
+    
+    if args.save_to_sql and args.sql_driver.lower() != 'sql server':
+        print("Only SQL Server is supported at the moment.")
+        exit()
 
     if args.username is None and args.password is not None or args.username is not None and args.password is None:
         print("Username and password must be provided together.")
