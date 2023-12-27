@@ -108,7 +108,7 @@ class DataExplorer:
         try:
             signal.signal(signal.SIGINT, on_sigint)
 
-            with alive_bar(reads_remaining, title='Diferent Nodes', calibrate=1000) as bar:
+            with alive_bar(reads_remaining, title='Diferent Nodes' if not self.args.all else 'Reading Nodes', calibrate=1000) as bar:
                 self.csv_handler.write_row(["Timestamp"] + leaf_node_names)
                 while reads_remaining != 0:
                     diferent_node = False
@@ -132,7 +132,7 @@ class DataExplorer:
                     if reads_remaining > 0:
                         reads_remaining -= 1
 
-                    if diferent_node:
+                    if diferent_node or self.args.all:
                         self.csv_handler.write_row(row)
                         bar()
                         if self.args.verbose: print()
@@ -173,6 +173,7 @@ if __name__ == "__main__":
     parser.add_argument('-t', '--time', dest='time', default=1, help='Time between reads in seconds')
     parser.add_argument('-r', '--reads', dest='reads', default=10, help='Number of reads, -1 for infinite')
     parser.add_argument('-f', '--file', dest='file', help='Output file name')
+    parser.add_argument('-a', '--all', dest='all', action='store_true', help='Save all nodes, not just when they change')
     parser.add_argument('-v', '--verbose', dest='verbose', action='store_true', help='Verbose output')
 
     args = parser.parse_args()
