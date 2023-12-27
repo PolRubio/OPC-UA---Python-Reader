@@ -56,95 +56,107 @@ class OPCUAClient:
         await self.client.disconnect()
         print("Disconnected from server!\n")
 
+class CSVHandler:
+    def __init__(self, filename, leaf_nodes):
+        if filename is None:
+            filename = f"opcua_{args.server}_{args.port}_{time.strftime('%Y%m%d', time.localtime())}.csv"
+        self.filename = filename
+        self.leaf_nodes = leaf_nodes
+        self.last_nodes = {node: None for node in leaf_nodes}
+
+    def write_row(self, row):
+        with open(self.filename, 'a', newline='') as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(row)
+            csvfile.flush()
+
 def on_sigint(signum, frame):
     print("\nReceived SIGINT (CTRL+C). Exiting gracefully.")
     raise KeyboardInterrupt
 
-def main(args):
-    opcua_client = OPCUAClient(args.server, args.port, args.username, args.password)
+class DataExplorer:
+    def __init__(self, opcua_client, explorer, args):
+        self.opcua_client = opcua_client
+        self.explorer = explorer
+        self.args = args
 
-    async def run():
-        explorer = NodeExplorer(opcua_client.client)
-
+    async def run(self):
         try:
-            await opcua_client.connect()
+            await self.opcua_client.connect()
         except Exception as e:
             print(f"Error connecting to server: {e}")
-            if args.verbose: print(traceback.format_exc())
+            if self.args.verbose: print(traceback.format_exc())
             return
 
         try:
-            root_node = opcua_client.client.get_root_node()
-            await explorer.explore_nodes(root_node)
-            if args.verbose:
-                explorer.print_leaf_nodes()
-                explorer.print_summary()
+            root_node = self.opcua_client.client.get_root_node()
+            await self.explorer.explore_nodes(root_node)
+            if self.args.verbose:
+                self.explorer.print_summary()
+                self.explorer.print_leaf_nodes()
 
-            leaf_nodes = explorer.get_leaf_nodes()
-            leaf_node_names = await explorer.get_leaf_node_names()
+            leaf_nodes = self.explorer.get_leaf_nodes()
+            leaf_node_names = await self.explorer.get_leaf_node_names()
+            self.csv_handler = CSVHandler(self.args.file, leaf_nodes)
         except Exception as e:
             print(f"Error exploring nodes: {e}")
-            if args.verbose: print(traceback.format_exc())
+            if self.args.verbose: print(traceback.format_exc())
             return
 
-        reads_remaining = int(args.read)
-        if args.file is None:
-            filename = f"opcua_{args.server}_{args.port}_{time.strftime('%Y%m%d', time.localtime())}.csv"
-        else:
-            filename = args.file
+        reads_remaining = int(self.args.reads)
 
         try:
             signal.signal(signal.SIGINT, on_sigint)
 
             with alive_bar(reads_remaining, title='Diferent Nodes', calibrate=1000) as bar:
-                with open(filename, 'w', newline='') as csvfile:
-                    writer = csv.writer(csvfile)
-                    writer.writerow(["Timestamp"] + leaf_node_names)
-                    last_nodes = {node: None for node in leaf_nodes}
+                self.csv_handler.write_row(["Timestamp"] + leaf_node_names)
+                while reads_remaining != 0:
+                    diferent_node = False
+                    row = [time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())]
 
-                    while reads_remaining != 0:
-                        diferent_node = False
-                        row = [time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())]
+                    for node in leaf_nodes:
+                        try:
+                            value = await node.read_value()
+                            if self.csv_handler.last_nodes[node] != value:
+                                self.csv_handler.last_nodes[node] = value
+                                diferent_node = True
+                                if self.args.verbose: print(f"{node} = {value}")
+                            
+                            row.append(value)
+                        except Exception as e:
+                            row.append("Error")
+                            if self.args.verbose:
+                                print(f"Error reading node ({node}): {e}")
+                                print(traceback.format_exc())
 
-                        for node in leaf_nodes:
-                            try:
-                                value = await node.read_value()
-                                if last_nodes[node] != value:
-                                    last_nodes[node] = value
-                                    diferent_node = True
-                                    if args.verbose: print(f"{node} = {value}")
-                                
-                                row.append(value)
-                            except Exception as e:
-                                row.append("Error")
-                                if args.verbose:
-                                    print(f"Error reading node ({node}): {e}")
-                                    print(traceback.format_exc())
+                    if reads_remaining > 0:
+                        reads_remaining -= 1
 
-                        if reads_remaining > 0:
-                            reads_remaining -= 1
+                    if diferent_node:
+                        self.csv_handler.write_row(row)
+                        bar()
+                        if self.args.verbose: print()
 
-                        if diferent_node:
-                            writer.writerow(row)
-                            csvfile.flush()
-                            bar()
-                            if args.verbose: print()
-
-                        await asyncio.sleep(float(args.time))
+                    await asyncio.sleep(float(args.time))
 
         except KeyboardInterrupt:
             pass
         finally:
             print("\nExiting...")
             try:
-                await opcua_client.disconnect()
+                await self.opcua_client.disconnect()
             except Exception as e:
                 print(f"Error disconnecting from server: {e}")
-                if args.verbose: print(traceback.format_exc())
+                if self.args.verbose: print(traceback.format_exc())
                 return
 
+def main(args):
+    opcua_client = OPCUAClient(args.server, args.port, args.username, args.password)
+    explorer = NodeExplorer(opcua_client.client)
+    data_explorer = DataExplorer(opcua_client, explorer, args)
+
     try:
-        asyncio.run(run())
+        asyncio.run(data_explorer.run())
     except KeyboardInterrupt:
         pass
     except Exception as e:
@@ -159,7 +171,7 @@ if __name__ == "__main__":
     parser.add_argument('-u', '--username', dest='username', help='OPC UA server username')
     parser.add_argument('-w', '--password', dest='password', help='OPC UA server password')
     parser.add_argument('-t', '--time', dest='time', default=1, help='Time between reads in seconds')
-    parser.add_argument('-r', '--read', dest='read', default=10, help='Number of reads, -1 for infinite')
+    parser.add_argument('-r', '--reads', dest='reads', default=10, help='Number of reads, -1 for infinite')
     parser.add_argument('-f', '--file', dest='file', help='Output file name')
     parser.add_argument('-v', '--verbose', dest='verbose', action='store_true', help='Verbose output')
 
